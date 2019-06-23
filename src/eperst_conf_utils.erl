@@ -5,13 +5,51 @@
          validate_conf/1,
          merge_env/2,
          merge_app_env/2,
-         get_opt/3]).
+         get_opt/3,
+         with_sys_config/1,
+         with_app_config/2]).
 
+with_sys_config(Fun) when is_function(Fun, 1) ->
+    try get_sys_conf() of
+        {ok, SysConf} ->
+            case validate_conf(SysConf) of
+                ok    -> Fun(SysConf);
+                Error -> Error
+            end;
+        Error -> Error
+    catch
+        _:Error -> Error
+    end.
+
+with_app_config(Apps, Fun) when is_list(Apps), is_function(Fun, 1) ->
+    Confs = lists:foldl(fun(_, {error, _} = Error)-> Error;
+                           (App, Acc) ->
+                                case with_app_config(App, fun id/1) of
+                                    {ok, Env} ->
+                                        [{App, Env} | Acc];
+                                    Error ->
+                                        Error
+                                end
+                        end, [], Apps),
+    Fun(Confs);
+with_app_config(App, Fun) when is_atom(App), is_function(Fun, 1) ->
+    try get_app_conf(App) of
+        {ok, AppConf} ->
+            case validate_conf([{App, AppConf}]) of
+                ok    -> Fun(AppConf);
+                Error -> Error
+            end;
+        Error -> Error
+    catch
+        _:Error -> Error
+    end.
+
+-spec get_app_conf(atom()) -> {ok, proplists:proplist()} | {error, term()} | no_return().
 get_app_conf(Name) when is_atom(Name) ->
     FName = atom_to_list(Name) ++ ".app",
     case code:where_is_file(FName) of
         non_existing ->
-            {ok, []};
+            {error, non_existing};
         FullName ->
             case prim_consult(FullName) of
                 {ok, [{application, Name, Opts}]} ->
@@ -19,10 +57,11 @@ get_app_conf(Name) when is_atom(Name) ->
                 {error, Reason} ->
                     {error, {file:format_error(Reason), FName}};
                 error ->
-                    {error, "bad encoding"}
+                    {error, bad_encoding}
             end
     end.
 
+-spec get_sys_conf() -> {ok, proplists:proplist()} | {error, non_existing} | no_return().
 get_sys_conf() ->
     case init:get_argument(config) of
         {ok, Files} ->
@@ -51,13 +90,13 @@ get_sys_conf() ->
                                    throw({error, {FName, Line, Str}})
                            end
                    end, [], Files)};
-        _ -> {ok, []}
+        _ -> {error, non_existing}
     end.
 
+-spec validate_conf(proplists:proplist()) -> ok | {error, term()}.
 validate_conf([]) ->
     ok;
-validate_conf(ConfData) when is_list(ConfData) ->
-    [Application | ConfDataRem] = ConfData,
+validate_conf([Application | ConfDataRem]) ->
     case Application of
         {AppName, List} when is_atom(AppName), is_list(List) ->
             case lists:keymember(AppName, 1, ConfDataRem) of
@@ -86,6 +125,42 @@ validate_conf(ConfData) when is_list(ConfData) ->
     end;
 validate_conf(_ConfData) ->
     {error, "configuration must be a list ended by <dot><whitespace>"}.
+
+-spec merge_env(proplists:proplist(), proplists:proplist()) -> proplists:proplist().
+merge_env(Env1, Env2) ->
+    merge_env(Env1, Env2, []).
+
+merge_env([{App, AppEnv1} | T], Env2, Res) ->
+    case get_env_key(App, Env2) of
+        {value, AppEnv2, RestEnv2} ->
+            NewAppEnv = merge_app_env(AppEnv1, AppEnv2),
+            merge_env(T, RestEnv2, [{App, NewAppEnv} | Res]);
+        _ ->
+            merge_env(T, Env2, [{App, AppEnv1} | Res])
+    end;
+merge_env([], Env2, Res) ->
+    Env2 ++ Res.
+
+-spec merge_app_env(proplists:proplist(), proplists:proplist()) -> proplists:proplist().
+merge_app_env(Env1, Env2) ->
+    merge_app_env(Env1, Env2, []).
+
+merge_app_env([{Key, Val} | T], Env2, Res) ->
+    case get_env_key(Key, Env2) of
+        {value, NewVal, RestEnv} ->
+            merge_app_env(T, RestEnv, [{Key, NewVal}|Res]);
+        _ ->
+            merge_app_env(T, Env2, [{Key, Val} | Res])
+    end;
+merge_app_env([], Env2, Res) ->
+    Env2 ++ Res.
+
+-spec get_opt(term(), proplists:proplist(), term()) -> term().
+get_opt(Key, List, Default) ->
+    case lists:keyfind(Key, 1, List) of
+        {_Key, Val} -> Val;
+        _ -> Default
+    end.
 
 %% --------------- Internal ----------------------
 prim_consult(FullName) ->
@@ -233,20 +308,6 @@ config_error() ->
      {none, load_file,
       "configuration file must contain ONE list ended by <dot>"}}.
 
-merge_env(Env1, Env2) ->
-    merge_env(Env1, Env2, []).
-
-merge_env([{App, AppEnv1} | T], Env2, Res) ->
-    case get_env_key(App, Env2) of
-        {value, AppEnv2, RestEnv2} ->
-            NewAppEnv = merge_app_env(AppEnv1, AppEnv2),
-            merge_env(T, RestEnv2, [{App, NewAppEnv} | Res]);
-        _ ->
-            merge_env(T, Env2, [{App, AppEnv1} | Res])
-    end;
-merge_env([], Env2, Res) ->
-    Env2 ++ Res.
-
 file_binary_to_list(Bin) ->
     Enc = case epp:read_encoding_from_binary(Bin) of
               none -> epp:default_encoding();
@@ -266,21 +327,7 @@ get_env_key([H | T], Key, Res) ->
     get_env_key(T, Key, [H | Res]);
 get_env_key([], _Key, Res) -> Res.
 
-merge_app_env(Env1, Env2) ->
-    merge_app_env(Env1, Env2, []).
-
-merge_app_env([{Key, Val} | T], Env2, Res) ->
-    case get_env_key(Key, Env2) of
-        {value, NewVal, RestEnv} ->
-            merge_app_env(T, RestEnv, [{Key, NewVal}|Res]);
-        _ ->
-            merge_app_env(T, Env2, [{Key, Val} | Res])
-    end;
-merge_app_env([], Env2, Res) ->
-    Env2 ++ Res.
-
-get_opt(Key, List, Default) ->
-    case lists:keyfind(Key, 1, List) of
-        {_Key, Val} -> Val;
-        _ -> Default
-    end.
+id({error, _} = E) ->
+    E;
+id(X) ->
+    {ok, X}.
