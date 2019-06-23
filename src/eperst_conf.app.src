@@ -1,0 +1,14 @@
+{application, eperst_conf,
+ [{description, "Erlang persistent storage config library"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {licenses, ["LGPLv3"]},
+  {links, []}
+ ]}.
