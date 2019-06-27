@@ -7,7 +7,7 @@
     stdlib
    ]},
   {env,[]},
-  {modules, []},
+  {modules, [eperst_conf, eperst_conf_utils]},
 
   {licenses, ["LGPLv3"]},
   {links, []}

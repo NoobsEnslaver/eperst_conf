@@ -7,7 +7,8 @@
          merge_app_env/2,
          get_opt/3,
          with_sys_config/1,
-         with_app_config/2]).
+         with_app_config/2,
+         config_diff/2]).
 
 with_sys_config(Fun) when is_function(Fun, 1) ->
     try get_sys_conf() of
@@ -160,6 +161,27 @@ get_opt(Key, List, Default) ->
     case lists:keyfind(Key, 1, List) of
         {_Key, Val} -> Val;
         _ -> Default
+    end.
+
+-spec config_diff(EnvNow :: proplists:proplist(), EnvBefore :: proplists:proplist()) ->
+                         {Changed :: proplists:proplist(), New :: proplists:proplist(), Removed :: proplists:proplist()}.
+config_diff(AppEnvNow, AppEnvBefore) ->
+    config_diff(AppEnvNow, AppEnvBefore, {[], []}).
+
+config_diff([], AppEnvBefore, {Changed, New}) ->
+    Removed = lists:foldl(fun({Env, _Value}, Acc) -> [Env | Acc] end, [], AppEnvBefore),
+    {Changed, New, Removed};
+config_diff(AppEnvNow, [], {Changed, New}) ->
+    {Changed, AppEnvNow++New, []};
+config_diff([{Env, Value} | AppEnvNow], AppEnvBefore, {Changed, New}) ->
+    case lists:keyfind(Env, 1, AppEnvBefore) of
+        {Env, Value} ->
+            config_diff(AppEnvNow, lists:keydelete(Env,1,AppEnvBefore), {Changed, New});
+        {Env, _OtherValue} ->
+            config_diff(AppEnvNow, lists:keydelete(Env,1,AppEnvBefore),
+                           {[{Env, Value} | Changed], New});
+        false ->
+            config_diff(AppEnvNow, AppEnvBefore, {Changed, [{Env, Value}|New]})
     end.
 
 %% --------------- Internal ----------------------
